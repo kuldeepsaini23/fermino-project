@@ -1,10 +1,7 @@
-import { Router } from 'express';
+import express from 'express';
+import path from 'path';
 
-// Placeholder: In this case, stream routes are over socket.io
-const router = Router();
-
-router.get('/', (req, res) => {
-  res.send('Stream routes active. Use WebSocket for signaling.');
-});
+const router = express.Router();
+router.use('/hls', express.static(path.join(__dirname, '../../public/hls')));
 
 export default router;

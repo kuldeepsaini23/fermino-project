@@ -1,32 +1,38 @@
-import express from 'express';
-import { createServer } from 'http';
-import { Server } from 'socket.io';
-import dotenv from 'dotenv';
-
-import streamRoutes from './routes/stream';
-import watchRoutes from './routes/watch';
-import { handleStreamSocket } from './controller/stream';
-
+import express from "express";
+import { createServer } from "http";
+import { Server } from "socket.io";
+import dotenv from "dotenv";
+import streamRoutes from "./routes/stream";
+import watchRoutes from "./routes/watch";
+import { handleStreamSocket } from "./controller/stream";
+import cors from "cors";
+import path from 'path';
 
 dotenv.config();
 
+
 const app = express();
 const httpServer = createServer(app);
-const io = new Server(httpServer, { cors: { origin: '*' } });
-
-app.use('/hls', express.static('public/hls'));
-
-// Attach socket-based streaming
-io.of('/stream').on('connection', socket => {
-  console.log('🎥 Streamer connected');
-  handleStreamSocket(socket); // Delegated to controller
+const io = new Server(httpServer, {
+  cors: {
+    origin: "http://localhost:3000",
+    methods: ["GET", "POST"],
+  },
 });
 
-// HTTP API routes
-app.use('/api/stream', streamRoutes);
-app.use('/api/watch', watchRoutes);
+app.use(cors());
+app.use(express.json());
 
-const PORT = process.env.PORT || 5000;
-httpServer.listen(PORT, () =>
-  console.log(`✅ Server running at http://localhost:${PORT}`)
-);
+app.use('/hls', express.static(path.join(__dirname, '../public/hls')));
+app.use("/api/stream", streamRoutes);
+app.use("/api/watch", watchRoutes);
+
+io.of("/stream").on("connection", (socket) => {
+  console.log("🎥 Streamer connected");
+  handleStreamSocket(socket);
+});
+
+const PORT = process.env.PORT || 8000;
+httpServer.listen(PORT, () => {
+  console.log(`✅ Server running at http://localhost:${PORT}`);
+});

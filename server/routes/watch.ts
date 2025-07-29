@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getPlaylist } from '../controllers/watch';
+import { getPlaylist } from '../controller/watch';
 
 const router = Router();
 

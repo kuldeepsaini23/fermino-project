@@ -1,0 +1,5 @@
+{
+  "watch": ["index.ts", "routes", "controller"],
+  "ext": "ts",
+  "exec": "tsx index.ts"
+}
