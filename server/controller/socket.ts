@@ -3,7 +3,6 @@ import {
   WebRtcTransport,
   Producer,
   Consumer,
-  RtpCapabilities,
 } from "mediasoup/node/lib/types";
 import {
   createRouter,
@@ -12,26 +11,25 @@ import {
 } from "../service/mediasoup";
 import {
   getHLSStatus,
-  startHLSStream,
   stopHLSStream,
-  connectProducerToHLS,
   getHLSUrl,
   checkHLSHealth,
+  startHLSStream,
   startTestHLSStream,
+  connectProducerToHLS,
 } from "../service/hlsService";
 
-// Peer structure
+const peers = new Map<string, Peer>();
+const transports = new Map<string, WebRtcTransport>();
+const producers = new Map<string, Producer>();
+const consumers = new Map<string, Consumer>();
+
 type Peer = {
   socket: Socket;
   transports: Map<string, WebRtcTransport>;
   producers: Map<string, Producer>;
   consumers: Map<string, Consumer>;
 };
-
-const peers = new Map<string, Peer>();
-const transports = new Map<string, WebRtcTransport>();
-const producers = new Map<string, Producer>();
-const consumers = new Map<string, Consumer>();
 
 export const setupSocket = async (io: Server) => {
   const worker = await createWorker();
@@ -54,233 +52,163 @@ export const setupSocket = async (io: Server) => {
       hlsStatus: getHLSStatus(),
     });
 
-    socket.on(
-      "getRouterRtpCapabilities",
-      (callback: (rtpCapabilities: RtpCapabilities) => void) => {
-        callback(router.rtpCapabilities);
+    socket.on("getRouterRtpCapabilities", (callback) => {
+      callback(router.rtpCapabilities);
+    });
+
+    socket.on("createWebRtcTransport", async (_, callback) => {
+      try {
+        const transport = await createWebRtcTransport(router);
+        const peer = peers.get(socket.id);
+        if (!peer) return;
+
+        peer.transports.set(transport.id, transport);
+        transports.set(transport.id, transport);
+
+        callback({
+          params: {
+            id: transport.id,
+            iceParameters: transport.iceParameters,
+            iceCandidates: transport.iceCandidates,
+            dtlsParameters: transport.dtlsParameters,
+          },
+        });
+      } catch (error: any) {
+        console.error("Error creating transport:", error);
+        callback({ error: error.message });
       }
-    );
+    });
 
-    socket.on(
-      "createWebRtcTransport",
-      async ({}: { sender: boolean }, callback) => {
-        try {
-          const transport = await createWebRtcTransport(router);
-          const peer = peers.get(socket.id);
-          if (!peer) return;
-
-          peer.transports.set(transport.id, transport);
-          transports.set(transport.id, transport);
-
-          callback({
-            params: {
-              id: transport.id,
-              iceParameters: transport.iceParameters,
-              iceCandidates: transport.iceCandidates,
-              dtlsParameters: transport.dtlsParameters,
-            },
-          });
-        } catch (error: any) {
-          console.error("Error creating WebRTC transport:", error);
-          callback({ error: error.message });
-        }
+    socket.on("connectTransport", async ({ dtlsParameters, transportId }, callback) => {
+      try {
+        const transport = transports.get(transportId);
+        if (transport) await transport.connect({ dtlsParameters });
+        callback("success");
+      } catch (error: any) {
+        console.error("Transport connection failed:", error);
+        callback({ error: error.message });
       }
-    );
+    });
 
-    socket.on(
-      "connectTransport",
-      async ({ dtlsParameters, transportId }: any, callback) => {
-        try {
-          const transport = transports.get(transportId);
-          if (transport) {
-            await transport.connect({ dtlsParameters });
-            callback("success");
+    socket.on("produce", async ({ kind, rtpParameters, transportId }, callback) => {
+      try {
+        const transport = transports.get(transportId);
+        if (!transport) return callback({ error: "Transport not found" });
+
+        const producer = await transport.produce({ kind, rtpParameters });
+        const peer = peers.get(socket.id);
+        if (!peer) return callback({ error: "Peer not found" });
+
+        peer.producers.set(producer.id, producer);
+        producers.set(producer.id, producer);
+
+        producer.on("transportclose", () => {
+          producer.close();
+          producers.delete(producer.id);
+          peer.producers.delete(producer.id);
+
+          if (producers.size === 0 && getHLSStatus()) {
+            stopHLSStream();
+            io.emit("hlsStatusChanged", { status: false, url: null });
           }
-        } catch (error: any) {
-          console.error("Error connecting transport:", error);
-          callback({ error: error.message });
-        }
-      }
-    );
+        });
 
-    socket.on(
-      "produce",
-      async (
-        {
+        socket.broadcast.emit("newProducer", {
+          producerId: producer.id,
+          socketId: socket.id,
           kind,
-          rtpParameters,
-          transportId,
-        }: { kind: "audio" | "video"; rtpParameters: any; transportId: string },
-        callback
-      ) => {
-        try {
-          console.log(
-            `📺 Producing ${kind} track for transport ${transportId}`
-          );
+        });
 
-          const transport = transports.get(transportId);
-          if (!transport) {
-            console.error("❌ Transport not found:", transportId);
-            return callback({ error: "Transport not found" });
-          }
-
-          const producer = await transport.produce({ kind, rtpParameters });
-          console.log(`✅ Producer created: ${producer.id} (${kind})`);
-
-          const peer = peers.get(socket.id);
-          if (!peer) {
-            console.error("❌ Peer not found:", socket.id);
-            return callback({ error: "Peer not found" });
-          }
-
-          peer.producers.set(producer.id, producer);
-          producers.set(producer.id, producer);
-
-          // Event handlers...
-          producer.on("transportclose", () => {
-            console.log(`🔌 Producer transport closed: ${producer.id}`);
-            producer.close();
-            producers.delete(producer.id);
-            peer.producers.delete(producer.id);
-
-            if (producers.size === 0 && getHLSStatus()) {
-              console.log("🛑 Stopping HLS - no more producers");
-              stopHLSStream();
-              io.emit("hlsStatusChanged", { status: false, url: null });
+        if (kind === "video") {
+          if (!getHLSStatus()) {
+            const started = await startHLSStream(router);
+            if (started) {
+              io.emit("hlsStatusChanged", { status: true, url: getHLSUrl() });
+              setTimeout(async () => {
+                await connectProducerToHLS(router, producer.id);
+              }, 3000);
             }
-          });
-
-          socket.broadcast.emit("newProducer", {
-            producerId: producer.id,
-            socketId: socket.id,
-            kind,
-          });
-
-          // Handle HLS streaming for video producers
-          if (kind === "video") {
-            console.log("🎥 Setting up MediaSoup HLS for video producer");
-
-            if (!getHLSStatus()) {
-              console.log("▶️ Starting MediaSoup HLS stream");
-              const hlsStarted = await startHLSStream(router); // Use MediaSoup version
-              if (hlsStarted) {
-                io.emit("hlsStatusChanged", {
-                  status: true,
-                  url: getHLSUrl(),
-                });
-                console.log("✅ MediaSoup HLS stream started");
-              } else {
-                console.error("❌ Failed to start MediaSoup HLS stream");
-              }
-            }
-
-            // ✅ CONNECT IMMEDIATELY AFTER PRODUCER IS CREATED
-            console.log("🔗 Connecting producer to MediaSoup HLS...");
-            const connected = await connectProducerToHLS(router, producer.id);
-            if (connected) {
-              console.log(
-                `✅ Producer ${producer.id} connected to MediaSoup HLS stream`
-              );
-            } else {
-              console.error(
-                `❌ Failed to connect producer ${producer.id} to MediaSoup HLS`
-              );
-            }
+          } else {
+            setTimeout(async () => {
+              await connectProducerToHLS(router, producer.id);
+            }, 1000);
           }
-          callback({ id: producer.id });
-        } catch (error: any) {
-          console.error("❌ Error producing:", error);
-          callback({ error: error.message });
         }
-      }
-    );
 
-    socket.on(
-      "consume",
-      async (
-        {
-          consumerTransportId,
+        callback({ id: producer.id });
+      } catch (error: any) {
+        console.error("Produce error:", error);
+        callback({ error: error.message });
+      }
+    });
+
+    socket.on("consume", async ({ consumerTransportId, producerId, rtpCapabilities }, callback) => {
+      try {
+        if (!router.canConsume({ producerId, rtpCapabilities }))
+          return callback({ error: "Cannot consume" });
+
+        const transport = transports.get(consumerTransportId);
+        if (!transport) return;
+
+        const consumer = await transport.consume({
           producerId,
           rtpCapabilities,
-        }: {
-          consumerTransportId: string;
-          producerId: string;
-          rtpCapabilities: RtpCapabilities;
-        },
-        callback
-      ) => {
-        try {
-          if (!router.canConsume({ producerId, rtpCapabilities })) {
-            return callback({ error: "Cannot consume" });
-          }
+          paused: true,
+        });
 
-          const transport = transports.get(consumerTransportId);
-          if (!transport) return;
+        const peer = peers.get(socket.id);
+        if (!peer) return;
 
-          const consumer = await transport.consume({
+        peer.consumers.set(consumer.id, consumer);
+        consumers.set(consumer.id, consumer);
+
+        consumer.on("transportclose", () => {
+          consumer.close();
+          consumers.delete(consumer.id);
+          peer.consumers.delete(consumer.id);
+        });
+
+        consumer.on("producerclose", () => {
+          consumer.close();
+          consumers.delete(consumer.id);
+          peer.consumers.delete(consumer.id);
+          socket.emit("consumerClosed", { consumerId: consumer.id });
+        });
+
+        callback({
+          params: {
             producerId,
-            rtpCapabilities,
-            paused: true,
-          });
-
-          const peer = peers.get(socket.id);
-          if (!peer) return;
-
-          peer.consumers.set(consumer.id, consumer);
-          consumers.set(consumer.id, consumer);
-
-          consumer.on("transportclose", () => {
-            consumer.close();
-            consumers.delete(consumer.id);
-            peer.consumers.delete(consumer.id);
-          });
-
-          consumer.on("producerclose", () => {
-            consumer.close();
-            consumers.delete(consumer.id);
-            peer.consumers.delete(consumer.id);
-            socket.emit("consumerClosed", { consumerId: consumer.id });
-          });
-
-          callback({
-            params: {
-              producerId,
-              id: consumer.id,
-              kind: consumer.kind,
-              rtpParameters: consumer.rtpParameters,
-              type: consumer.type,
-              producerPaused: consumer.producerPaused,
-            },
-          });
-        } catch (error: any) {
-          console.error("Error consuming:", error);
-          callback({ error: error.message });
-        }
+            id: consumer.id,
+            kind: consumer.kind,
+            rtpParameters: consumer.rtpParameters,
+            type: consumer.type,
+            producerPaused: consumer.producerPaused,
+          },
+        });
+      } catch (error: any) {
+        console.error("Consume error:", error);
+        callback({ error: error.message });
       }
-    );
+    });
 
-    socket.on(
-      "consumerResume",
-      async ({ consumerId }: { consumerId: string }, callback) => {
-        try {
-          const consumer = consumers.get(consumerId);
-          if (consumer) {
-            await consumer.resume();
-            callback("success");
-          }
-        } catch (error: any) {
-          console.error("Error resuming consumer:", error);
-          callback({ error: error.message });
-        }
+    socket.on("consumerResume", async ({ consumerId }, callback) => {
+      try {
+        const consumer = consumers.get(consumerId);
+        if (consumer) await consumer.resume();
+        callback("success");
+      } catch (error: any) {
+        console.error("Resume error:", error);
+        callback({ error: error.message });
       }
-    );
+    });
 
-    // HLS-specific events
     socket.on("getHLSStatus", (callback) => {
       const health = checkHLSHealth();
       callback({
         ...health,
         url: getHLSUrl(),
+        activeProducers: producers.size,
+        videoProducers: Array.from(producers.values()).filter(p => p.kind === 'video').length,
       });
     });
 
@@ -289,20 +217,17 @@ export const setupSocket = async (io: Server) => {
         if (!getHLSStatus()) {
           const started = await startHLSStream(router);
           if (started) {
-            io.emit("hlsStatusChanged", {
-              status: true,
-              url: getHLSUrl(),
-            });
+            io.emit("hlsStatusChanged", { status: true, url: getHLSUrl() });
+            const videoProducers = Array.from(producers.values()).filter(p => p.kind === 'video');
+            for (const producer of videoProducers) {
+              setTimeout(async () => await connectProducerToHLS(router, producer.id), 2000);
+            }
             callback({ success: true, url: getHLSUrl() });
           } else {
-            callback({ success: false, error: "Failed to start HLS stream" });
+            callback({ success: false, error: "Failed to start HLS" });
           }
         } else {
-          callback({
-            success: true,
-            url: getHLSUrl(),
-            message: "HLS already running",
-          });
+          callback({ success: true, url: getHLSUrl(), message: "HLS already running" });
         }
       } catch (error: any) {
         callback({ success: false, error: error.message });
@@ -316,64 +241,46 @@ export const setupSocket = async (io: Server) => {
           io.emit("hlsStatusChanged", { status: false, url: null });
           callback({ success: true });
         } else {
-          callback({ success: true, message: "HLS was not running" });
+          callback({ success: true, message: "HLS not running" });
         }
       } catch (error: any) {
         callback({ success: false, error: error.message });
       }
     });
 
-    socket.on("disconnect", () => {
-      console.log("🔌 Client disconnected:", socket.id);
+    socket.on("startTestHLS", async (callback) => {
+      try {
+        const started = await startTestHLSStream();
+        callback({ success: started, message: started ? "Test HLS started" : "Failed to start test HLS" });
+      } catch (error: any) {
+        callback({ success: false, error: error.message });
+      }
+    });
 
+    socket.on("disconnect", () => {
       const peer = peers.get(socket.id);
       if (peer) {
-        // Close all transports
-        peer.transports.forEach((transport: WebRtcTransport) => {
-          console.log(`🔌 Closing transport: ${transport.id}`);
-          transport.close();
-          transports.delete(transport.id);
-        });
-
-        // Close all producers
-        peer.producers.forEach((producer: Producer) => {
-          console.log(`🎥 Closing producer: ${producer.id}`);
-          producer.close();
-          producers.delete(producer.id);
-          socket.broadcast.emit("producerClosed", { producerId: producer.id });
-        });
-
-        // Close all consumers
-        peer.consumers.forEach((consumer: Consumer) => {
-          console.log(`👥 Closing consumer: ${consumer.id}`);
-          consumer.close();
-          consumers.delete(consumer.id);
-        });
-
+        peer.transports.forEach(t => { t.close(); transports.delete(t.id); });
+        peer.producers.forEach(p => { p.close(); producers.delete(p.id); socket.broadcast.emit("producerClosed", { producerId: p.id }); });
+        peer.consumers.forEach(c => { c.close(); consumers.delete(c.id); });
         peers.delete(socket.id);
       }
 
-      // Stop HLS if no more video producers
-      const hasVideoProducers = Array.from(producers.values()).some(
-        (p) => p.kind === "video"
-      );
+      const hasVideoProducers = Array.from(producers.values()).some(p => p.kind === "video");
       if (!hasVideoProducers && getHLSStatus()) {
-        console.log("🛑 No more video producers, stopping HLS");
         stopHLSStream();
         io.emit("hlsStatusChanged", { status: false, url: null });
       }
     });
   });
 
-  // Periodic HLS health check
   setInterval(() => {
     if (getHLSStatus()) {
       const health = checkHLSHealth();
       if (!health.hasSegments || !health.manifestExists) {
-        console.warn("HLS health check failed:", health);
-        // Optionally restart HLS or notify clients
+        console.warn("HLS health issue:", health);
         io.emit("hlsHealthWarning", health);
       }
     }
-  }, 10000); // Check every 10 seconds
+  }, 15000);
 };

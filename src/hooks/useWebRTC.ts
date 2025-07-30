@@ -61,26 +61,73 @@ const useWebRTC = () => {
     };
   }, []);
 
-const startStreaming = async () => {
-  console.log("Starting streaming...");
-  const d = new Device()
-  await new Promise<void>((resolve) => {
-    socket.current?.emit("getRouterRtpCapabilities", async (rtpCapabilities: any) => {
-      await d.load({ routerRtpCapabilities: rtpCapabilities })
-      device.current = d
-      resolve()
-    })
-  })
+// const startStreaming = async () => {
+//   console.log("Starting streaming...");
+//   const d = new Device()
+//   await new Promise<void>((resolve) => {
+//     socket.current?.emit("getRouterRtpCapabilities", async (rtpCapabilities: any) => {
+//       await d.load({ routerRtpCapabilities: rtpCapabilities })
+//       device.current = d
+//       resolve()
+//     })
+//   })
 
-  await createProducerTransport()
-  await createConsumerTransport()
+//   await createProducerTransport()
+//   await createConsumerTransport()
   
-  // ✅ USE SCREEN CAPTURE INSTEAD OF WEBCAM
-  try {
-    const stream = await navigator.mediaDevices.getDisplayMedia({ 
-      video: true, 
-      audio: true 
+//   // ✅ USE SCREEN CAPTURE INSTEAD OF WEBCAM
+//   try {
+//     const stream = await navigator.mediaDevices.getDisplayMedia({ 
+//       video: true, 
+//       audio: true 
+//     })
+//     localStreamRef.current = stream
+//     if (localVideoRef.current) localVideoRef.current.srcObject = stream
+
+//     const videoTrack = stream.getVideoTracks()[0]
+//     if (videoTrack && producerTransport.current) {
+//       videoProducer.current = await producerTransport.current.produce({ track: videoTrack })
+//       setIsVideoEnabled(true)
+//     }
+//     const audioTrack = stream.getAudioTracks()[0]
+//     if (audioTrack && producerTransport.current) {
+//       audioProducer.current = await producerTransport.current.produce({ track: audioTrack })
+//       setIsAudioEnabled(true)
+//     }
+//     setIsStreaming(true)
+//   } catch (error) {
+//     console.error("Error accessing media:", error)
+//     // Fallback to audio only
+//     try {
+//       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+//       localStreamRef.current = stream
+//       const audioTrack = stream.getAudioTracks()[0]
+//       if (audioTrack && producerTransport.current) {
+//         audioProducer.current = await producerTransport.current.produce({ track: audioTrack })
+//         setIsAudioEnabled(true)
+//       }
+//       setIsStreaming(true)
+//     } catch (fallbackError) {
+//       console.error("No media devices available:", fallbackError)
+//       alert("No camera or microphone found. Please connect a webcam or enable screen sharing.")
+//     }
+//   }
+// }
+const startStreaming = async () => {
+    console.log("Starting streaming...")
+    const d = new Device()
+    await new Promise<void>((resolve) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      socket.current?.emit("getRouterRtpCapabilities", async (rtpCapabilities: any) => {
+        await d.load({ routerRtpCapabilities: rtpCapabilities })
+        device.current = d
+        resolve()
+      })
     })
+
+    await createProducerTransport()
+    await createConsumerTransport()
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
     localStreamRef.current = stream
     if (localVideoRef.current) localVideoRef.current.srcObject = stream
 
@@ -95,24 +142,8 @@ const startStreaming = async () => {
       setIsAudioEnabled(true)
     }
     setIsStreaming(true)
-  } catch (error) {
-    console.error("Error accessing media:", error)
-    // Fallback to audio only
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      localStreamRef.current = stream
-      const audioTrack = stream.getAudioTracks()[0]
-      if (audioTrack && producerTransport.current) {
-        audioProducer.current = await producerTransport.current.produce({ track: audioTrack })
-        setIsAudioEnabled(true)
-      }
-      setIsStreaming(true)
-    } catch (fallbackError) {
-      console.error("No media devices available:", fallbackError)
-      alert("No camera or microphone found. Please connect a webcam or enable screen sharing.")
-    }
   }
-}
+
 
 const stopStreaming = () => {
   console.log("🛑 Stopping streaming...");
