@@ -56,7 +56,10 @@ export const createRouter = async(worker: Worker): Promise<Router> => {
 export const createWebRtcTransport = async (router: Router) => {
   try {
     const transport = await router.createWebRtcTransport({
-      listenIps: [{ ip: '127.0.0.1', announcedIp: "" }],
+      listenIps: [{ 
+        ip: process.env.MEDIASOUP_LISTEN_IP || '127.0.0.1', 
+        announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || undefined 
+      }],
       enableUdp: true,
       enableTcp: true,
       preferUdp: true,
@@ -74,7 +77,6 @@ export const createWebRtcTransport = async (router: Router) => {
     throw error;
   }
 }
-
 export const initializeMediasoup = async () => {
   try {
     const worker = await createWorker();
