@@ -10,7 +10,7 @@ import { PlainTransport } from 'mediasoup/node/lib/types';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let ffmpegProcess: any = null;
 let isStreaming = false;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
 
 
 let plainTransport: PlainTransport | null = null;

@@ -9,6 +9,7 @@ const mediaCodecs: RtpCodecCapability[] = [
     kind: "audio",
     mimeType: "audio/opus",
     clockRate: 48000,
+    preferredPayloadType:111,
     channels: 2,
   },
   {
