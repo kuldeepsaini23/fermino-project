@@ -1,8 +1,14 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Server, Socket } from 'socket.io';
-import {  WebRtcTransport, Producer, Consumer, RtpCapabilities } from 'mediasoup/node/lib/types';
-import {  createRouter, createWebRtcTransport, createWorker } from '../service/mediasoup';
-import { getHLSStatus, startHLSStream, stopHLSStream } from '../service/hlsService';
+import { WebRtcTransport, Producer, Consumer, RtpCapabilities } from 'mediasoup/node/lib/types';
+import { createRouter, createWebRtcTransport, createWorker } from '../service/mediasoup';
+import { 
+  getHLSStatus, 
+  startHLSStream, 
+  stopHLSStream, 
+  connectProducerToHLS,
+  getHLSUrl,
+  checkHLSHealth 
+} from '../service/hlsService';
 
 // Peer structure
 type Peer = {
@@ -17,8 +23,7 @@ const transports = new Map<string, WebRtcTransport>();
 const producers = new Map<string, Producer>();
 const consumers = new Map<string, Consumer>();
 
-export const setupSocket =async (io: Server) => {
-
+export const setupSocket = async (io: Server) => {
   const worker = await createWorker();
   const router = await createRouter(worker);
 
@@ -35,14 +40,15 @@ export const setupSocket =async (io: Server) => {
     socket.emit('connection-success', {
       socketId: socket.id,
       existingProducers: Array.from(producers.keys()),
+      hlsUrl: getHLSUrl(),
+      hlsStatus: getHLSStatus(),
     });
 
     socket.on('getRouterRtpCapabilities', (callback: (rtpCapabilities: RtpCapabilities) => void) => {
-     
       callback(router.rtpCapabilities);
     });
 
-    socket.on('createWebRtcTransport', async ({  }: { sender: boolean }, callback) => {
+    socket.on('createWebRtcTransport', async ({ }: { sender: boolean }, callback) => {
       try {
         const transport = await createWebRtcTransport(router);
         const peer = peers.get(socket.id);
@@ -96,15 +102,42 @@ export const setupSocket =async (io: Server) => {
             producer.close();
             producers.delete(producer.id);
             peer.producers.delete(producer.id);
+            
+            // Stop HLS if no more producers
+            if (producers.size === 0 && getHLSStatus()) {
+              stopHLSStream();
+              io.emit('hlsStatusChanged', { status: false, url: null });
+            }
           });
 
           socket.broadcast.emit('newProducer', {
             producerId: producer.id,
             socketId: socket.id,
+            kind,
           });
 
-          if (kind === 'video' && !getHLSStatus()) {
-            setTimeout(() => startHLSStream(), 1000);
+          // Handle HLS streaming for video producers
+          if (kind === 'video') {
+            let hlsStarted = false;
+            
+            if (!getHLSStatus()) {
+              // Start HLS stream if not already running
+              hlsStarted = await startHLSStream(router);
+              if (hlsStarted) {
+                io.emit('hlsStatusChanged', { 
+                  status: true, 
+                  url: getHLSUrl() 
+                });
+              }
+            }
+
+            // Connect this producer to HLS (after a short delay to ensure HLS is ready)
+            setTimeout(async () => {
+              const connected = await connectProducerToHLS(router, producer.id);
+              if (connected) {
+                console.log(`Producer ${producer.id} connected to HLS stream`);
+              }
+            }, hlsStarted ? 2000 : 500);
           }
 
           callback({ id: producer.id });
@@ -185,6 +218,50 @@ export const setupSocket =async (io: Server) => {
       }
     });
 
+    // HLS-specific events
+    socket.on('getHLSStatus', (callback) => {
+      const health = checkHLSHealth();
+      callback({
+        ...health,
+        url: getHLSUrl(),
+      });
+    });
+
+    socket.on('startHLS', async (callback) => {
+      try {
+        if (!getHLSStatus()) {
+          const started = await startHLSStream(router);
+          if (started) {
+            io.emit('hlsStatusChanged', { 
+              status: true, 
+              url: getHLSUrl() 
+            });
+            callback({ success: true, url: getHLSUrl() });
+          } else {
+            callback({ success: false, error: 'Failed to start HLS stream' });
+          }
+        } else {
+          callback({ success: true, url: getHLSUrl(), message: 'HLS already running' });
+        }
+      } catch (error: any) {
+        callback({ success: false, error: error.message });
+      }
+    });
+
+    socket.on('stopHLS', (callback) => {
+      try {
+        if (getHLSStatus()) {
+          stopHLSStream();
+          io.emit('hlsStatusChanged', { status: false, url: null });
+          callback({ success: true });
+        } else {
+          callback({ success: true, message: 'HLS was not running' });
+        }
+      } catch (error: any) {
+        callback({ success: false, error: error.message });
+      }
+    });
+
     socket.on('disconnect', () => {
       console.log('Client disconnected:', socket.id);
 
@@ -209,9 +286,24 @@ export const setupSocket =async (io: Server) => {
         peers.delete(socket.id);
       }
 
-      if (producers.size === 0 && getHLSStatus()) {
+      // Stop HLS if no more video producers
+      const hasVideoProducers = Array.from(producers.values()).some(p => p.kind === 'video');
+      if (!hasVideoProducers && getHLSStatus()) {
         stopHLSStream();
+        io.emit('hlsStatusChanged', { status: false, url: null });
       }
     });
   });
+
+  // Periodic HLS health check
+  setInterval(() => {
+    if (getHLSStatus()) {
+      const health = checkHLSHealth();
+      if (!health.hasSegments || !health.manifestExists) {
+        console.warn('HLS health check failed:', health);
+        // Optionally restart HLS or notify clients
+        io.emit('hlsHealthWarning', health);
+      }
+    }
+  }, 10000); // Check every 10 seconds
 };

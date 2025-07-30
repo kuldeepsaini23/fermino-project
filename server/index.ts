@@ -7,6 +7,8 @@ import watchRoutes from "./routes/watch";
 import { handleStreamSocket } from "./controller/stream";
 import cors from "cors";
 import path from 'path';
+import { initializeMediasoup } from "./service/mediasoup";
+import { setupSocket } from "./controller/socket";
 
 dotenv.config();
 
@@ -32,7 +34,10 @@ io.of("/stream").on("connection", (socket) => {
   handleStreamSocket(socket);
 });
 
-const PORT = process.env.PORT || 8000;
-httpServer.listen(PORT, () => {
-  console.log(`✅ Server running at http://localhost:${PORT}`);
-});
+
+
+initializeMediasoup().then(() => {
+  setupSocket(io);
+  const PORT = process.env.PORT || 8000;
+  httpServer.listen(PORT, () => console.log(`Server running on ${PORT}`));
+}).catch(console.error);

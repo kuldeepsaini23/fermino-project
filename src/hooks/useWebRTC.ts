@@ -19,13 +19,19 @@ const useWebRTC = () => {
   const producerTransport = useRef<Transport | null>(null)
   const consumerTransport = useRef<Transport | null>(null)
   const videoProducer = useRef<Producer | null>(null)
-  const audioProducer = useRef<Producer | null>(null)
+  const audioProducer = useRef<Producer | null>(null) 
 
   useEffect(() => {
     socket.current = io("http://localhost:8000")
+    console.log("Connecting to WebSocket server...")
     const s = socket.current
+    console.log("WebSocket connection established", s)
+    s.on("connect", () => {
+      console.log("Connected to WebSocket server")
+    })
 
     s.on("connection-success", ({ existingProducers }) => {
+      console.log("Connection successful")
       setIsConnected(true)
       setRemoteProducers(existingProducers.map((id: string) => ({ id, socketId: "unknown" })))
     })
@@ -51,6 +57,7 @@ const useWebRTC = () => {
   }, [])
 
   const startStreaming = async () => {
+    console.log("Starting streaming...")
     const d = new Device()
     await new Promise<void>((resolve) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
