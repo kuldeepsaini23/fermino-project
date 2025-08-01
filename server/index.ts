@@ -26,8 +26,8 @@ app.use(cors());
 app.use(express.json());
 
 app.use('/hls', express.static(path.join(__dirname, '../public/hls')));
-app.use("/api/stream", streamRoutes);
-app.use("/api/watch", watchRoutes);
+app.use("/api/v1/stream", streamRoutes);
+app.use("/api/v1/watch", watchRoutes);
 
 io.of("/stream").on("connection", (socket) => {
   console.log("🎥 Streamer connected");
