@@ -4,7 +4,7 @@ import StreamStats from "@/components/global/watch/StreamStats";
 import VideoPlayer from "@/components/global/watch/VideoPlayer";
 
 export default function WatchPage() {
-  const streamUrl = "http://localhost:8000/hls/stream.m3u8";
+  const streamUrl = "http://localhost:7000/hls/stream.m3u8";
 
   return (
     <div className="min-h-screen bg-gray-100 p-6">

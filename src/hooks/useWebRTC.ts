@@ -22,7 +22,7 @@ const useWebRTC = () => {
   const audioProducer = useRef<Producer | null>(null);
 
   useEffect(() => {
-    socket.current = io("http://localhost:8000");
+    socket.current = io("http://localhost:7000");
     console.log("Connecting to WebSocket server...");
     const s = socket.current;
     console.log("WebSocket connection established", s);

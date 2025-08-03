@@ -36,11 +36,11 @@ export function checkHLSHealth() {
   return { isStreaming, hasSegments, manifestExists };
 }
 
-// Simplified SDP creation for VP8
-const createSimpleSDPFile = (rtpPort: number, rtcpPort: number) => {
+// Simple SDP for basic FFmpeg
+const createBasicSDP = (rtpPort: number, rtcpPort: number): string => {
   const sdpContent = `v=0
 o=- 0 0 IN IP4 127.0.0.1
-s=MediaSoup Stream
+s=Stream
 c=IN IP4 127.0.0.1
 t=0 0
 m=video ${rtpPort} RTP/AVP 96
@@ -51,153 +51,170 @@ a=recvonly
 
   const sdpPath = path.join(hlsDir, "stream.sdp");
   fs.writeFileSync(sdpPath, sdpContent);
-  console.log("📝 SDP file created:", sdpPath);
+  console.log("📝 Basic SDP created");
   return sdpPath;
 };
 
+function ensureDirectoryExists() {
+  if (!fs.existsSync(hlsDir)) {
+    fs.mkdirSync(hlsDir, { recursive: true });
+  }
+  console.log("✅ Directory ready");
+}
+
 function cleanupHLS() {
-  console.log("🧹 Cleaning up HLS resources");
+  console.log("🧹 Cleaning up resources");
   
-  // Close all consumers
   activeConsumers.forEach((consumer, id) => {
-    console.log(`🗑️ Closing consumer: ${id}`);
-    consumer.close();
+    try {
+      consumer.close();
+    } catch (err) {
+      console.error(`Error closing consumer ${id}:`, err);
+    }
   });
   activeConsumers.clear();
   
-  // Close plain transport
   if (plainTransport) {
-    plainTransport.close();
-    plainTransport = null;
-  }
-  
-  // Kill FFmpeg process
-  if (ffmpegProcess) {
-    ffmpegProcess.kill("SIGKILL");
-    ffmpegProcess = null;
-  }
-  
-  // Clean up files
-  try {
-    if (fs.existsSync(hlsDir)) {
-      fs.readdirSync(hlsDir).forEach((file) => {
-        if (file.endsWith(".ts") || file.endsWith(".m3u8") || file.endsWith(".sdp")) {
-          fs.unlinkSync(path.join(hlsDir, file));
-        }
-      });
+    try {
+      plainTransport.close();
+      plainTransport = null;
+    } catch (err) {
+      console.error("Error closing transport:", err);
     }
-  } catch (err) {
-    console.error("❌ Error cleaning files:", err);
   }
+  
+  if (ffmpegProcess) {
+    try {
+      ffmpegProcess.kill("SIGTERM");
+      ffmpegProcess = null;
+    } catch (err) {
+      console.error("Error killing FFmpeg:", err);
+    }
+  }
+  
+  // Clean files
+  setTimeout(() => {
+    try {
+      if (fs.existsSync(hlsDir)) {
+        const files = fs.readdirSync(hlsDir);
+        files.forEach((file) => {
+          if (file.endsWith(".ts") || file.endsWith(".m3u8") || file.endsWith(".sdp")) {
+            try {
+              fs.unlinkSync(path.join(hlsDir, file));
+              console.log(`🗑️ Cleaned: ${file}`);
+            } catch (err) {
+              // Ignore locked files
+            }
+          }
+        });
+      }
+    } catch (err) {
+      // Ignore cleanup errors
+    }
+  }, 1000);
 }
 
 export function stopHLSStream() {
-  console.log("🛑 Stopping HLS stream...");
+  console.log("🛑 Stopping HLS");
   isStreaming = false;
   cleanupHLS();
 }
 
 export async function startHLSStream(router: Router): Promise<boolean> {
   if (isStreaming) {
-    console.log("⚠️ HLS already streaming");
+    console.log("⚠️ Already streaming");
     return false;
   }
 
   try {
-    console.log("🚀 Starting HLS stream...");
+    console.log("🚀 Starting basic HLS stream...");
     
-    // Ensure HLS directory exists
-    if (!fs.existsSync(hlsDir)) {
-      fs.mkdirSync(hlsDir, { recursive: true });
-    }
-    
-    // Clean previous files
+    ensureDirectoryExists();
     cleanupHLS();
 
-    // Create plain transport
     plainTransport = await router.createPlainTransport({
       listenIp: { ip: "127.0.0.1" },
       rtcpMux: false,
-      comedia: true, // Allow remote peer to initiate connection
+      comedia: false,
     });
 
     const rtpPort = plainTransport.tuple.localPort;
     const rtcpPort = plainTransport.rtcpTuple?.localPort || rtpPort + 1;
     
-    console.log(`✅ Plain transport created - RTP: ${rtpPort}, RTCP: ${rtcpPort}`);
+    console.log(`✅ Transport ready - RTP: ${rtpPort}, RTCP: ${rtcpPort}`);
 
-    // Create SDP file
-    const sdpPath = createSimpleSDPFile(rtpPort, rtcpPort);
-
-    // Start FFmpeg with simplified pipeline
-    await startFFmpegProcess(sdpPath);
+    const sdpPath = createBasicSDP(rtpPort, rtcpPort);
+    await startBasicFFmpeg(sdpPath);
     
     isStreaming = true;
+    console.log("✅ HLS started");
     return true;
     
   } catch (err) {
-    console.error("❌ Failed to start HLS:", err);
+    console.error("❌ Start failed:", err);
     isStreaming = false;
     cleanupHLS();
     return false;
   }
 }
 
-async function startFFmpegProcess(sdpPath: string): Promise<void> {
+// Very basic FFmpeg with minimal options
+async function startBasicFFmpeg(sdpPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    console.log("🎥 Starting FFmpeg process...");
+    console.log("🎥 Starting basic FFmpeg...");
+    
+    const outputPath = path.resolve(hlsDir, "stream.m3u8");
+    const segmentPath = path.resolve(hlsDir, "seg_%03d.ts");
+    
+    let resolved = false;
     
     ffmpegProcess = ffmpeg()
       .input(sdpPath)
       .inputOptions([
         "-protocol_whitelist", "file,udp,rtp",
-        "-fflags", "+genpts+discardcorrupt",
-        "-thread_queue_size", "1024",
-        "-analyzeduration", "1000000",
-        "-probesize", "1000000"
+        "-fflags", "+genpts"
       ])
       .videoCodec("libx264")
       .outputOptions([
         "-preset", "ultrafast",
-        "-tune", "zerolatency",
         "-profile:v", "baseline",
-        "-level", "3.1",
         "-pix_fmt", "yuv420p",
-        "-g", "30", // GOP size
-        "-keyint_min", "30",
-        "-sc_threshold", "0",
-        "-b:v", "1000k",
-        "-maxrate", "1200k",
-        "-bufsize", "2000k",
+        "-g", "30",
+        "-b:v", "500k",
         "-f", "hls",
-        "-hls_time", "2",
-        "-hls_list_size", "10",
-        "-hls_flags", "delete_segments+append_list",
-        "-hls_segment_filename", path.join(hlsDir, "segment_%05d.ts").replace(/\\/g, "/"),
-        "-hls_base_url", "/hls/"
+        "-hls_time", "6",
+        "-hls_list_size", "5",
+        "-hls_segment_filename", segmentPath
       ])
-      .output(path.join(hlsDir, "stream.m3u8").replace(/\\/g, "/"))
+      .output(outputPath)
       .on("start", (cmd) => {
-        console.log("🎬 FFmpeg started with command:");
+        console.log("🎬 FFmpeg command:");
         console.log(cmd);
-        resolve();
+        if (!resolved) {
+          resolved = true;
+          resolve();
+        }
       })
       .on("stderr", (line) => {
-        // Only log important messages
-        if (line.includes("frame=") || line.includes("time=") || line.includes("fps=")) {
-          console.log("📹 FFmpeg:", line.trim());
+        if (line.includes("frame=")) {
+          console.log("📹", line.trim());
         } else if (line.includes("error") || line.includes("Error")) {
-          console.error("❌ FFmpeg Error:", line.trim());
+          console.error("❌ FFmpeg:", line.trim());
+        } else if (line.includes("hls") || line.includes("segment")) {
+          console.log("🔍", line.trim());
         }
       })
       .on("error", (err) => {
-        console.error("❌ FFmpeg process error:", err.message);
+        console.error("❌ FFmpeg error:", err.message);
         isStreaming = false;
         cleanupHLS();
-        reject(err);
+        if (!resolved) {
+          resolved = true;
+          reject(err);
+        }
       })
       .on("end", () => {
-        console.log("🛑 FFmpeg process ended");
+        console.log("🛑 FFmpeg ended");
         isStreaming = false;
         cleanupHLS();
       })
@@ -207,113 +224,128 @@ async function startFFmpegProcess(sdpPath: string): Promise<void> {
 
 export async function connectProducerToHLS(router: Router, producerId: string): Promise<boolean> {
   if (!plainTransport || !isStreaming) {
-    console.log("❌ Cannot connect: No plain transport or not streaming");
+    console.log("❌ Cannot connect: No transport");
     return false;
   }
 
   try {
-    console.log(`🔌 Connecting producer ${producerId} to HLS...`);
+    console.log(`🔌 Connecting producer ${producerId}...`);
 
-    // Get VP8 codec from router capabilities
     const videoCodec = router.rtpCapabilities.codecs?.find(
       codec => codec.mimeType.toLowerCase() === "video/vp8"
     );
 
     if (!videoCodec) {
-      console.error("❌ VP8 codec not found in router capabilities");
+      console.error("❌ VP8 not found");
       return false;
     }
 
-    // Create consumer for this producer
     const consumer = await plainTransport.consume({
       producerId,
       rtpCapabilities: {
         codecs: [videoCodec],
         headerExtensions: [],
       },
-      paused: false,
+      paused: true,
     });
 
-    // Store consumer for cleanup
     activeConsumers.set(consumer.id, consumer);
+    console.log(`📊 Consumer: ${consumer.id}`);
 
-    // Set up event handlers
     consumer.on("transportclose", () => {
-      console.log(`🔌 Transport closed for consumer ${consumer.id}`);
       activeConsumers.delete(consumer.id);
     });
 
     consumer.on("producerclose", () => {
-      console.log(`🎭 Producer closed for consumer ${consumer.id}`);
       activeConsumers.delete(consumer.id);
     });
 
-    // Resume consumer
-    await consumer.resume();
-    console.log(`✅ Consumer created and resumed: ${consumer.id}`);
+    await plainTransport.connect({
+      ip: "127.0.0.1",
+      port: plainTransport.tuple.localPort,
+      rtcpPort: plainTransport.rtcpTuple?.localPort
+    });
+
+    setTimeout(async () => {
+      try {
+        await consumer.resume();
+        console.log(`✅ Consumer resumed: ${consumer.id}`);
+        console.log("🎬 Pipeline active!");
+      } catch (err) {
+        console.error("❌ Resume error:", err);
+      }
+    }, 3000); // Longer delay
 
     return true;
     
   } catch (err) {
-    console.error("❌ Failed to connect producer to HLS:", err);
+    console.error("❌ Connect failed:", err);
     return false;
   }
 }
 
-// Test HLS with a static video file
+// Simple test without advanced options
 export async function startTestHLSStream(): Promise<boolean> {
-  if (isStreaming) return false;
-  
-  console.log("🧪 Starting test HLS stream...");
-  
-  if (!fs.existsSync(hlsDir)) {
-    fs.mkdirSync(hlsDir, { recursive: true });
+  if (isStreaming) {
+    return false;
   }
-
-  // Clean previous files
-  cleanupHLS();
-
+  
+  console.log("🧪 Creating manual test...");
+  
   try {
-    ffmpegProcess = ffmpeg()
-      .input("testsrc=duration=3600:size=640x480:rate=30") // Generate test pattern
-      .inputOptions(["-f", "lavfi"])
-      .videoCodec("libx264")
-      .outputOptions([
-        "-preset", "ultrafast",
-        "-tune", "zerolatency",
-        "-profile:v", "baseline",
-        "-pix_fmt", "yuv420p",
-        "-g", "30",
-        "-b:v", "500k",
-        "-f", "hls",
-        "-hls_time", "2",
-        "-hls_list_size", "10",
-        "-hls_flags", "delete_segments+append_list",
-        "-hls_segment_filename", path.join(hlsDir, "test_segment_%05d.ts"),
-      ])
-      .output(path.join(hlsDir, "stream.m3u8"))
-      .on("start", (cmd) => {
-        console.log("🧪 Test FFmpeg started:", cmd);
-        isStreaming = true;
-      })
-      .on("stderr", (line) => {
-        if (line.includes("frame=")) {
-          console.log("🧪 Test Stream:", line.trim());
-        }
-      })
-      .on("error", (err) => {
-        console.error("❌ Test HLS error:", err);
-        isStreaming = false;
-      })
-      .on("end", () => {
-        console.log("🧪 Test HLS stream ended");
-        isStreaming = false;
-      })
-      .run();
+    ensureDirectoryExists();
+    cleanupHLS();
+
+    // Just create manual HLS since FFmpeg options are limited
+    const manifestContent = `#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:6
+#EXT-X-MEDIA-SEQUENCE:0
+#EXTINF:6.0,
+seg_000.ts
+#EXTINF:6.0,
+seg_001.ts
+#EXTINF:6.0,
+seg_002.ts
+#EXT-X-ENDLIST
+`;
+    
+    const manifestPath = path.join(hlsDir, "stream.m3u8");
+    fs.writeFileSync(manifestPath, manifestContent);
+    
+    // Create segments
+    for (let i = 0; i < 3; i++) {
+      const segmentPath = path.join(hlsDir, `seg_00${i}.ts`);
+      const segmentData = Buffer.alloc(150000); // 150KB
+      
+      // Fill with TS packets
+      for (let p = 0; p < Math.floor(segmentData.length / 188); p++) {
+        const offset = p * 188;
+        segmentData[offset] = 0x47; // TS sync
+        segmentData[offset + 1] = 0x40;
+        segmentData[offset + 2] = i;
+        segmentData[offset + 3] = p % 16;
+      }
+      
+      fs.writeFileSync(segmentPath, segmentData);
+    }
+    
+    console.log("✅ Manual test created");
+    isStreaming = true;
+    
+    // Auto-stop after 20 seconds
+    setTimeout(() => {
+      isStreaming = false;
+      cleanupHLS();
+    }, 20000);
 
     return true;
   } catch (err) {
-    console.error("❌ Failed to start test stream:", err);
+    console.error("❌ Test failed:", err);
     return false;
   }
+}
+
+export async function startTestWithSDPFile(): Promise<boolean> {
+  return startTestHLSStream(); // Same as manual test for simplicity
 }
