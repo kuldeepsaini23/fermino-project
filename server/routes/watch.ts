@@ -1,13 +1,6 @@
 import { Router } from 'express';
 import { getPlaylist } from '../controller/watch';
-import { 
-  checkHLSHealth, 
-  getHLSStatus, 
-  startTestHLSStream, 
-  stopHLSStream,
-  startHLSWithDirectRTP 
-} from '../service/hlsService';
-import { createRouter, createWorker } from '../service/mediasoup';
+import { checkHLSHealth, getHLSStatus, startTestHLSStream, stopHLSStream } from '../service/hlsService';
 
 const router = Router();
 
@@ -22,13 +15,13 @@ router.get('/debug', (req, res) => {
   });
 });
 
-// Test color bar stream
+// Test color bar endpoint
 router.post('/test-colorbar', async (req, res) => {
   try {
-    console.log("🧪 Starting color bar test stream...");
-    const success = await startTestHLSStream();
+    console.log("🧪 Color bar test requested via HTTP");
+    const started = await startTestHLSStream();
     
-    if (success) {
+    if (started) {
       res.json({ 
         success: true, 
         message: "Color bar test stream started successfully",
@@ -37,11 +30,11 @@ router.post('/test-colorbar', async (req, res) => {
     } else {
       res.json({ 
         success: false, 
-        error: "Failed to start test stream - check server logs"
+        error: "Failed to start color bar test stream"
       });
     }
   } catch (error: any) {
-    console.error("❌ Test stream error:", error);
+    console.error("❌ Color bar test error:", error);
     res.json({ 
       success: false, 
       error: error.message || "Unknown error occurred"
@@ -49,47 +42,25 @@ router.post('/test-colorbar', async (req, res) => {
   }
 });
 
-// Stop HLS stream
-router.post('/stop', (req, res) => {
+// Stop HLS endpoint
+router.post('/stop', async (req, res) => {
   try {
-    console.log("🛑 Stop HLS request received");
-    stopHLSStream();
-    res.json({ 
-      success: true, 
-      message: "HLS stream stopped successfully"
-    });
-  } catch (error: any) {
-    console.error("❌ Stop HLS error:", error);
-    res.json({ 
-      success: false, 
-      error: error.message || "Failed to stop stream"
-    });
-  }
-});
-
-// Test direct RTP approach
-router.post('/test-direct-rtp', async (req, res) => {
-  try {
-    console.log("🧪 Starting direct RTP test...");
-    const worker = await createWorker();
-    const mediaRouter = await createRouter(worker);
+    console.log("🛑 HLS stop requested via HTTP");
     
-    const success = await startHLSWithDirectRTP(mediaRouter);
-    
-    if (success) {
+    if (getHLSStatus()) {
+      stopHLSStream();
       res.json({ 
         success: true, 
-        message: "Direct RTP test started successfully",
-        url: "/hls/stream.m3u8"
+        message: "HLS stream stopped successfully"
       });
     } else {
       res.json({ 
-        success: false, 
-        error: "Failed to start direct RTP test"
+        success: true, 
+        message: "HLS stream was not running"
       });
     }
   } catch (error: any) {
-    console.error("❌ Direct RTP test error:", error);
+    console.error("❌ HLS stop error:", error);
     res.json({ 
       success: false, 
       error: error.message || "Unknown error occurred"
